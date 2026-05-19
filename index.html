@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>David · Morning Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>tailwind.config = { darkMode: 'class' };</script>
+  <style>
+    * { box-sizing: border-box; }
+    body { background: #0F172A; color: #F1F5F9; font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #1E293B; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+    textarea, input, select { outline: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 0.7s linear infinite; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fadeIn 0.35s ease; }
+    @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── Storage key (shared: ML data comes from personal-tracker via same localStorage) ──
+const STORAGE_KEY   = 'david-dashboard-v1';
+const ML_STORE_KEY  = 'tracker-ml';   // written by personal-tracker site
+
+// ── Date helpers ──────────────────────────────────────────────
+const todayStr  = () => new Date().toISOString().split('T')[0];
+const dayName   = () => ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date().getDay()];
+const daysAgo   = (s) => { if (!s) return 999; return Math.floor((new Date() - new Date(s)) / 86400000); };
+const fmtTime   = (d) => d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
+const fmtDate   = (d) => d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric', year:'numeric' });
+
+// ── Async storage (window.storage → localStorage fallback) ────
+async function loadState() {
+  try { if (window.storage) { const r = await window.storage.get(STORAGE_KEY); if (r) return JSON.parse(r.value); } } catch {}
+  try { const v = localStorage.getItem(STORAGE_KEY); if (v) return JSON.parse(v); } catch {}
+  return null;
+}
+async function saveState(data) {
+  const j = JSON.stringify(data);
+  try { if (window.storage) { await window.storage.set(STORAGE_KEY, j); return; } } catch {}
+  try { localStorage.setItem(STORAGE_KEY, j); } catch {}
+}
+
+// ── ML roadmap (mirrors personal-tracker) ─────────────────────
+const ML_TOPICS = [
+  { id:'gpu-mental-model', title:'GPU Mental Model',  week:'Wk 1–2',   icon:'⚡', color:'#2563EB' },
+  { id:'triton-kernels',   title:'Triton Kernels',    week:'Wk 3–4',   icon:'🔧', color:'#7C3AED' },
+  { id:'flashattention',   title:'FlashAttention',    week:'Wk 5–6',   icon:'📄', color:'#0891B2' },
+  { id:'efficientml',      title:'Efficient ML',      week:'Wk 7–8',   icon:'🗜️', color:'#059669' },
+  { id:'vllm',             title:'vLLM & Inference',  week:'Wk 9–10',  icon:'🚀', color:'#D97706' },
+  { id:'tvm-mlir',         title:'TVM & MLIR',        week:'Wk 11–14', icon:'🔩', color:'#B45309' },
+];
+const loadML = () => { try { return JSON.parse(localStorage.getItem(ML_STORE_KEY) || '{}'); } catch { return {}; } };
+
+// ── Meal rotation (mirrors personal-tracker) ──────────────────
+function getTodayMeals() {
+  const d   = new Date().getDay();
+  const idx = d === 0 ? 6 : d - 1;
+  if ([0,3,6].includes(idx)) return { cal:'~1,900', meals:[
+    { slot:'🌅 Breakfast', name:'3 MM Eggs + 2 Whole Grain Toast',              cal:'375 cal', macro:'24g P · 30g C · 17g F' },
+    { slot:'☀️ Lunch',     name:'StarKist Tuna + Rice Cakes + Carrots + Apple', cal:'490 cal', macro:'44g P · 64g C · 2g F'  },
+    { slot:'🌙 Dinner',    name:'MM Salmon 8oz + Rice Pouch + Frozen Broccoli', cal:'810 cal', macro:'53g P · 69g C · 35g F' },
+    { slot:'🍎 Snack',     name:'MM Cottage Cheese + Frozen Berries',           cal:'215 cal', macro:'25g P · 16g C · 5g F'  },
+  ]};
+  if ([1,4].includes(idx)) return { cal:'~1,915', meals:[
+    { slot:'🌅 Breakfast', name:'3 MM Eggs + 2 Whole Grain Toast',                   cal:'375 cal', macro:'24g P · 30g C · 17g F' },
+    { slot:'☀️ Lunch',     name:"Sam's Rotisserie Chicken + Rice Pouch + Cucumber",  cal:'565 cal', macro:'47g P · 69g C · 12g F' },
+    { slot:'🌙 Dinner',    name:'MM Ground Turkey Stir-Fry + Frozen Veggies + Rice', cal:'670 cal', macro:'49g P · 79g C · 15g F' },
+    { slot:'🍎 Snack',     name:'2 Hard-Boiled Eggs + MM Almonds 1oz',              cal:'305 cal', macro:'18g P · 6g C · 21g F'  },
+  ]};
+  return { cal:'~1,840', meals:[
+    { slot:'🌅 Breakfast', name:'3 MM Eggs + 2 Whole Grain Toast',                          cal:'375 cal', macro:'24g P · 30g C · 17g F' },
+    { slot:'☀️ Lunch',     name:'MM Greek Yogurt 1.5 cups + Banana + Almonds 1.5oz',        cal:'550 cal', macro:'43g P · 51g C · 21g F' },
+    { slot:'🌙 Dinner',    name:'MM Chicken Breast 8oz + Sweet Potato + Romaine Salad',     cal:'640 cal', macro:'54g P · 68g C · 19g F' },
+    { slot:'🍎 Snack',     name:'MM Gala Apple + MM Peanut Butter 2 tbsp',                 cal:'270 cal', macro:'8g P · 37g C · 17g F'  },
+  ]};
+}
+
+// ── Initial card data ─────────────────────────────────────────
+const INITIAL_CARDS = [
+  {
+    id:'phd', title:'PhD / Dissertation', icon:'🎓', color:'#6366F1',
+    status:'Active', priority:'High',
+    notes:[
+      'Defense target Spring 2026 — committee feedback pending on Ch. 4',
+      'GRF biomechanics model finalization needed before full submission',
+      'Schedule next committee meeting to review current draft',
+    ],
+    lastUpdated: todayStr(),
+  },
+  {
+    id:'grf-paper', title:'GRF Paper (TMLR)', icon:'📄', color:'#0EA5E9',
+    status:'Waiting', priority:'Medium',
+    notes:[
+      'Submitted to TMLR — awaiting Action Editor assignment (est. 2–4 wks)',
+      'Prepare rebuttal notes in advance for likely reviewer questions',
+      'Monitor portal daily — AE assignment triggers the formal review clock',
+    ],
+    lastUpdated:'2026-05-15',
+  },
+  {
+    id:'job-search', title:'Job Search', icon:'💼', color:'#10B981',
+    status:'Active', priority:'High',
+    notes:[
+      'Targeting Meta AI, Google DeepMind, NVIDIA, Anthropic + McKinsey APD',
+      'Prep gap: system design, GPU/inference optimization interview questions',
+      'ML Systems self-study directly feeds interview readiness — keep pace',
+    ],
+    lastUpdated: todayStr(),
+  },
+  {
+    id:'ml-study', title:'ML Systems Self-Study', icon:'🧠', color:'#8B5CF6',
+    status:'Active', priority:'High',
+    notes:[
+      '16-week roadmap: currently Wk 1–2 GPU Mental Model',
+      'Track: Triton → FlashAttention → EfficientML → vLLM → TVM/MLIR',
+      '1 hr/day minimum — your primary differentiator for systems roles',
+    ],
+    lastUpdated:'2026-05-18',
+  },
+  {
+    id:'caravan', title:'Grand Caravan Maintenance', icon:'🚐', color:'#F59E0B',
+    status:'Active', priority:'Low',
+    notes:[
+      'Punch list: brakes inspection, oil change overdue, AC recharge',
+      'Check transmission fluid — last checked ~3 months ago',
+      'Research shop vs DIY cost before next payday',
+    ],
+    lastUpdated:'2026-05-10',
+  },
+  {
+    id:'lucy', title:"Lucy's Nursing Pathway", icon:'💉', color:'#EC4899',
+    status:'Active', priority:'High',
+    notes:[
+      'F-1 visa maintained — Blinn College prereqs in progress',
+      'Target TAMU BSN admission: Fall 2026 or Spring 2027',
+      'SEVIS compliance critical — verify full-time enrollment each term',
+    ],
+    lastUpdated:'2026-05-17',
+  },
+  {
+    id:'immigration', title:'EB-2 NIW Immigration', icon:'🗽', color:'#14B8A6',
+    status:'Active', priority:'High',
+    notes:[
+      'Self-petition track — building evidence package now',
+      'Need: 3 expert recommendation letters + publications + national importance statement',
+      'USCIS processing ~12–18 months — file ASAP post-graduation',
+    ],
+    lastUpdated:'2026-05-14',
+  },
+  {
+    id:'life-admin', title:'Life Admin', icon:'🏠', color:'#94A3B8',
+    status:'Active', priority:'Low',
+    notes:[
+      'Apartment lease renewal coming up — confirm dates and options',
+      'Health insurance: verify TAMU grad student plan coverage',
+      'Monthly budget review: track spend vs PhD stipend',
+    ],
+    lastUpdated:'2026-05-12',
+  },
+];
+
+// ── Status & Priority styling ─────────────────────────────────
+const STATUS_OPTS = ['Active','Blocked','Waiting','Done'];
+const STATUS_STYLE = {
+  Active:  'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
+  Blocked: 'bg-red-500/20 text-red-400 border border-red-500/40',
+  Waiting: 'bg-amber-500/20 text-amber-400 border border-amber-500/40',
+  Done:    'bg-slate-600/40 text-slate-400 border border-slate-600/60',
+};
+const PRIORITY_STYLE = { High:'text-red-400', Medium:'text-amber-400', Low:'text-slate-500' };
+
+// ── AI Prompt builders ────────────────────────────────────────
+function buildSystemPrompt() {
+  return `You are David's personal morning command center AI. You know his situation cold:
+
+IDENTITY: EE PhD candidate, Texas A&M, defending Spring 2026. Job searching for ML/AI engineering roles at Meta AI, Google DeepMind, NVIDIA, Anthropic, + McKinsey APD track simultaneously.
+
+LIFE AREAS: PhD dissertation (wrapping up), GRF biomechanics paper (submitted to TMLR), job search (active), ML systems self-study (16-week roadmap: GPU Mental Model → Triton → FlashAttention → EfficientML → vLLM → TVM/MLIR), Grand Caravan DIY maintenance, wife Lucy's nursing pathway (F-1 visa + Blinn prereqs → TAMU BSN), EB-2 NIW immigration self-petition, general life admin.
+
+TONE: Direct, specific, no fluff. You are a trusted advisor who knows the stakes. He is 95 kg, tracking ~2,100 cal/day on a Sam's Club meal plan.
+
+RESPONSE FORMAT — use EXACTLY these section headers, no deviation:
+
+## 🎯 Today's Top 3
+1. [Card name]: [specific action + concrete reason]
+2. [Card name]: [specific action + concrete reason]
+3. [Card name]: [specific action + concrete reason]
+
+## 🚨 Urgent / Blocked
+[Any Blocked cards or imminent deadlines. If clear: "Nothing critical blocking you right now."]
+
+## 😴 Neglected (7+ days stale)
+[For each card not updated in 7+ days: name it, days since update, one 10-minute action. If none: "All areas active — good discipline."]
+
+## ⚡ Remember This
+[One sentence. Tied to David's actual situation. Not generic. Make it land.]`;
+}
+
+function buildUserMessage(cards, dailyNote) {
+  const ml    = loadML();
+  const meals = getTodayMeals();
+  const doneML  = ML_TOPICS.filter(t => ml[t.id]?.status === 'done').length;
+  const activeML = ML_TOPICS.find(t => ml[t.id]?.status === 'active');
+
+  let msg = `Date: ${todayStr()} (${dayName()})\nTime: ${fmtTime(new Date())}\n`;
+  msg += `Yesterday: ${dailyNote?.trim() || '(no note — reflect on what happened)'}\n\n`;
+  msg += `=== DASHBOARD STATE ===\n\n`;
+
+  cards.forEach(c => {
+    const ago = daysAgo(c.lastUpdated);
+    const staleMark = ago >= 7 ? ` ⚠️ STALE ${ago}d` : ago === 0 ? ' (today)' : ` (${ago}d ago)`;
+    msg += `[${c.status.toUpperCase()} | ${c.priority} Priority${staleMark}] ${c.icon} ${c.title}\n`;
+    c.notes.forEach(n => msg += `  • ${n}\n`);
+    msg += '\n';
+  });
+
+  msg += `=== ML SYSTEMS ROADMAP ===\n`;
+  msg += `Progress: ${doneML}/6 topics complete. `;
+  msg += activeML ? `Active now: ${activeML.title} (${activeML.week}).` : 'No active topic set.';
+  msg += '\n';
+  ML_TOPICS.forEach(t => {
+    const s = ml[t.id]?.status || 'none';
+    msg += `  ${s==='done'?'✅':s==='active'?'🔄':'⬜'} ${t.title} (${t.week})\n`;
+  });
+
+  msg += `\n=== TODAY'S MEAL PLAN (Sam's Club, ${meals.cal} cal) ===\n`;
+  meals.meals.forEach(m => msg += `  ${m.slot}: ${m.name} · ${m.cal} · ${m.macro}\n`);
+
+  msg += '\nGive me my morning debrief.';
+  return msg;
+}
+
+// ── Markdown export for Obsidian ──────────────────────────────
+function genMarkdown(cards, dailyNote, debrief) {
+  const ml    = loadML();
+  const meals = getTodayMeals();
+  let md = `---\ndate: ${todayStr()}\nday: ${dayName()}\ntags: [dashboard, daily-note]\n---\n\n`;
+  md += `# Morning Dashboard — ${todayStr()} (${dayName()})\n\n`;
+
+  if (dailyNote?.trim()) md += `## Yesterday\n> ${dailyNote.trim()}\n\n`;
+  if (debrief?.trim())   md += `## AI Morning Debrief\n${debrief.trim()}\n\n`;
+
+  md += `## Life Areas\n\n`;
+  cards.forEach(c => {
+    const ago = daysAgo(c.lastUpdated);
+    md += `### ${c.icon} ${c.title}\n`;
+    md += `**Status:** ${c.status} · **Priority:** ${c.priority} · **Last updated:** ${c.lastUpdated} (${ago === 0 ? 'today' : ago+'d ago'})\n\n`;
+    c.notes.forEach(n => md += `- ${n}\n`);
+    md += '\n';
+  });
+
+  md += `## Meals Today (${meals.cal} cal)\n\n`;
+  meals.meals.forEach(m => md += `- **${m.slot}** — ${m.name} · ${m.cal} · \`${m.macro}\`\n`);
+
+  md += `\n## ML Systems Roadmap\n\n`;
+  ML_TOPICS.forEach(t => {
+    const s = ml[t.id]?.status || 'none';
+    md += `- ${s==='done'?'✅':s==='active'?'🔄':'⬜'} ${t.icon} **${t.title}** (${t.week})\n`;
+    if (ml[t.id]?.notes) md += `  > ${ml[t.id].notes}\n`;
+  });
+
+  return md;
+}
+
+// ── Parse debrief markdown into renderable sections ───────────
+function parseDebrief(text) {
+  const sections = [];
+  let cur = null;
+  text.split('\n').forEach(line => {
+    if (line.startsWith('## ')) {
+      if (cur) sections.push(cur);
+      cur = { header: line.slice(3).trim(), lines: [] };
+    } else if (cur) {
+      cur.lines.push(line);
+    }
+  });
+  if (cur) sections.push(cur);
+  return sections;
+}
+
+const SECTION_ACCENT = {
+  '🎯': { left:'border-l-indigo-500',  bg:'bg-indigo-500/8',  head:'text-indigo-300' },
+  '🚨': { left:'border-l-red-500',     bg:'bg-red-500/8',     head:'text-red-300'    },
+  '😴': { left:'border-l-amber-500',   bg:'bg-amber-500/8',   head:'text-amber-300'  },
+  '⚡': { left:'border-l-emerald-500', bg:'bg-emerald-500/8', head:'text-emerald-300'},
+};
+
+// ════════════════════════════════════════════════════════════════
+// COMPONENTS
+// ════════════════════════════════════════════════════════════════
+
+function Header({ time }) {
+  const h = time.getHours();
+  const greeting = h < 5 ? "Still up, David?" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  return (
+    <div className="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-sm border-b border-slate-800 px-4 py-3 flex items-center justify-between gap-4">
+      <div>
+        <div className="text-xs text-slate-500 uppercase tracking-widest">{greeting}, David</div>
+        <div className="text-base font-bold text-slate-100">{fmtDate(time)}</div>
+        <div className="text-xs text-slate-600 mt-0.5">EE PhD · Texas A&M · Spring 2026</div>
+      </div>
+      <div className="text-right shrink-0">
+        <div className="text-2xl font-mono font-light text-slate-300 tabular-nums">{fmtTime(time)}</div>
+        <div className="flex items-center justify-end gap-1.5 mt-1">
+          <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 pulse-dot" />
+          <span className="text-xs text-slate-600">Live</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DailyNote({ value, onChange }) {
+  return (
+    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-sm">📝</span>
+        <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Yesterday's Recap</span>
+        <span className="text-xs text-slate-600 ml-1">— feeds the morning debrief</span>
+      </div>
+      <textarea
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="2 sentences. What did you actually do? What didn't happen?"
+        rows={2}
+        className="w-full bg-slate-900/80 text-slate-200 rounded-lg px-3 py-2.5 text-sm resize-none border border-slate-700 focus:border-slate-500 placeholder-slate-600 transition-colors leading-relaxed"
+      />
+    </div>
+  );
+}
+
+function DebriefPanel({ cards, dailyNote, debrief, setDebrief }) {
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+
+  const run = async () => {
+    setLoading(true); setError(''); setDebrief('');
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          system: buildSystemPrompt(),
+          messages: [{ role:'user', content: buildUserMessage(cards, dailyNote) }],
+        }),
+      });
+      const data = await res.json();
+      if (data.error) setError(data.error.message);
+      else setDebrief(data.content?.[0]?.text || '');
+    } catch {
+      setError('Network error — check connection or API key environment.');
+    }
+    setLoading(false);
+  };
+
+  const sections = debrief ? parseDebrief(debrief) : [];
+
+  return (
+    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4 space-y-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm">☀️</span>
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Morning Debrief</span>
+          </div>
+          <div className="text-xs text-slate-600 mt-0.5">AI brief based on your current dashboard state + daily note</div>
+        </div>
+        <button
+          onClick={run}
+          disabled={loading}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors shrink-0"
+        >
+          {loading
+            ? <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full spin" />Generating…</>
+            : '☀️ Good Morning'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-xs text-red-400 leading-relaxed">{error}</div>
+      )}
+
+      {sections.length > 0 && (
+        <div className="space-y-3 fade-in">
+          {sections.map((s, i) => {
+            const emoji  = [...s.header].find(c => c.match(/\p{Emoji}/u));
+            const style  = SECTION_ACCENT[emoji] || { left:'border-l-slate-600', bg:'bg-slate-700/20', head:'text-slate-300' };
+            const body   = s.lines.filter(l => l.trim());
+            return (
+              <div key={i} className={`border-l-4 ${style.left} ${style.bg} rounded-r-xl pl-4 pr-4 py-3`}>
+                <div className={`text-sm font-bold mb-2 ${style.head}`}>{s.header}</div>
+                <div className="space-y-1">
+                  {body.map((line, j) => {
+                    const isNum     = /^\d+\./.test(line.trim());
+                    const isBullet  = /^[-*]/.test(line.trim());
+                    return (
+                      <div key={j} className={`text-sm leading-relaxed ${isNum ? 'text-slate-200 font-medium' : 'text-slate-300'}`}>
+                        {line}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!debrief && !loading && !error && (
+        <div className="text-center py-8 text-slate-600 text-sm">
+          Fill in yesterday's note, then hit <span className="text-slate-400">"Good Morning"</span> for your AI brief
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MealSummary() {
+  const today = getTodayMeals();
+  return (
+    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm">🥗</span>
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Today's Meals</span>
+        </div>
+        <span className="text-xs bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-medium">
+          {today.cal} cal
+        </span>
+      </div>
+      <div className="space-y-2.5">
+        {today.meals.map((m, i) => (
+          <div key={i} className="flex gap-2.5 items-start">
+            <span className="text-sm shrink-0 mt-0.5">{m.slot.split(' ')[0]}</span>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-slate-300 leading-snug">{m.name}</div>
+              <div className="text-xs text-slate-600 mt-0.5">{m.cal} · {m.macro}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <a
+        href="https://hsantos10.github.io/personal-tracker/"
+        target="_blank"
+        className="mt-3 flex items-center gap-1 text-xs text-emerald-500 hover:text-emerald-400 transition-colors"
+      >
+        Open full tracker →
+      </a>
+    </div>
+  );
+}
+
+function MLProgressSummary() {
+  const [mlData, setMlData] = useState({});
+  useEffect(() => { setMlData(loadML()); }, []);
+
+  const done    = ML_TOPICS.filter(t => mlData[t.id]?.status === 'done').length;
+  const active  = ML_TOPICS.find(t => mlData[t.id]?.status === 'active');
+  const pct     = Math.round((done / ML_TOPICS.length) * 100);
+
+  return (
+    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm">🧠</span>
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-widest">ML Roadmap</span>
+        </div>
+        <span className="text-xs text-slate-500">{done}/{ML_TOPICS.length} done</span>
+      </div>
+      {active && (
+        <div className="text-xs text-violet-400 mb-2">Active: {active.title}</div>
+      )}
+      <div className="w-full bg-slate-700 rounded-full h-1.5 mb-3">
+        <div className="bg-violet-500 h-1.5 rounded-full transition-all duration-500" style={{ width:`${pct}%` }} />
+      </div>
+      <div className="space-y-1.5">
+        {ML_TOPICS.map(t => {
+          const s = mlData[t.id]?.status || 'none';
+          return (
+            <div key={t.id} className="flex items-center gap-2">
+              <span className="text-xs w-4 shrink-0">{s==='done'?'✅':s==='active'?'🔄':'⬜'}</span>
+              <span className={`text-xs ${s==='done'?'text-slate-500 line-through':s==='active'?'text-violet-300 font-medium':'text-slate-500'}`}>
+                {t.icon} {t.title}
+              </span>
+              <span className="text-xs text-slate-700 ml-auto shrink-0">{t.week}</span>
+            </div>
+          );
+        })}
+      </div>
+      <a
+        href="https://hsantos10.github.io/personal-tracker/"
+        target="_blank"
+        className="mt-3 flex items-center gap-1 text-xs text-violet-500 hover:text-violet-400 transition-colors"
+      >
+        Open ML tracker →
+      </a>
+    </div>
+  );
+}
+
+// ── Individual life area card ─────────────────────────────────
+function LifeCard({ card, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [draft,   setDraft]   = useState(null);
+  const ago   = daysAgo(card.lastUpdated);
+  const stale = ago >= 7;
+
+  const startEdit = () => { setDraft({ ...card, notes: [...card.notes] }); setEditing(true); };
+  const cancel    = () => { setEditing(false); setDraft(null); };
+  const save      = () => { onUpdate(card.id, draft); setEditing(false); setDraft(null); };
+
+  const cycleStatus = () => {
+    const i = STATUS_OPTS.indexOf(card.status);
+    onUpdate(card.id, { status: STATUS_OPTS[(i + 1) % STATUS_OPTS.length] });
+  };
+
+  const updateNote  = (i, v) => { const n = [...draft.notes]; n[i] = v; setDraft({ ...draft, notes: n }); };
+  const addNote     = () => { if (draft.notes.length < 4) setDraft({ ...draft, notes: [...draft.notes, ''] }); };
+  const removeNote  = (i) => setDraft({ ...draft, notes: draft.notes.filter((_, j) => j !== i) });
+
+  return (
+    <div
+      className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden hover:border-slate-600 transition-all duration-200 flex flex-col"
+      style={{ borderTopColor: card.color, borderTopWidth: '3px' }}
+    >
+      <div className="p-4 flex flex-col gap-3 flex-1">
+        {/* Card header */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="text-xl shrink-0">{card.icon}</span>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-slate-100 leading-tight">{card.title}</div>
+              <div className={`text-xs mt-0.5 font-medium ${PRIORITY_STYLE[card.priority]}`}>⚑ {card.priority}</div>
+            </div>
+          </div>
+          <button
+            onClick={editing ? cancel : startEdit}
+            className="text-xs text-slate-600 hover:text-slate-300 transition-colors shrink-0 px-2 py-1 rounded-md hover:bg-slate-700/70"
+          >
+            {editing ? 'Cancel' : 'Edit'}
+          </button>
+        </div>
+
+        {!editing && (
+          <>
+            {/* Status + staleness */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={cycleStatus}
+                title="Click to cycle status"
+                className={`text-xs px-2.5 py-0.5 rounded-full font-semibold transition-all ${STATUS_STYLE[card.status]}`}
+              >
+                {card.status}
+              </button>
+              <span className={`text-xs ml-auto ${stale ? 'text-amber-600' : 'text-slate-600'}`}>
+                {stale ? `⚠ ${ago}d stale` : ago === 0 ? 'Updated today' : `${ago}d ago`}
+              </span>
+            </div>
+
+            {/* Notes */}
+            <ul className="space-y-1.5 flex-1">
+              {card.notes.map((n, i) => (
+                <li key={i} className="flex gap-2 text-xs text-slate-400 leading-snug">
+                  <span className="text-slate-700 shrink-0 mt-0.5">•</span>
+                  <span>{n}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        {editing && draft && (
+          <div className="space-y-3 fade-in">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Status</div>
+                <select
+                  value={draft.status}
+                  onChange={e => setDraft({ ...draft, status: e.target.value })}
+                  className="w-full bg-slate-900 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 border border-slate-600 focus:border-slate-400 transition-colors"
+                >
+                  {STATUS_OPTS.map(s => <option key={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Priority</div>
+                <select
+                  value={draft.priority}
+                  onChange={e => setDraft({ ...draft, priority: e.target.value })}
+                  className="w-full bg-slate-900 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 border border-slate-600 focus:border-slate-400 transition-colors"
+                >
+                  {['High','Medium','Low'].map(p => <option key={p}>{p}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs text-slate-500 mb-1.5">Notes (max 4)</div>
+              <div className="space-y-1.5">
+                {draft.notes.map((n, i) => (
+                  <div key={i} className="flex gap-1.5">
+                    <textarea
+                      value={n}
+                      onChange={e => updateNote(i, e.target.value)}
+                      rows={1}
+                      className="flex-1 bg-slate-900 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 border border-slate-600 focus:border-slate-400 resize-none transition-colors"
+                    />
+                    <button
+                      onClick={() => removeNote(i)}
+                      className="text-slate-600 hover:text-red-400 transition-colors px-1 text-base leading-none self-start pt-1.5"
+                    >×</button>
+                  </div>
+                ))}
+                {draft.notes.length < 4 && (
+                  <button onClick={addNote} className="text-xs text-slate-600 hover:text-slate-400 transition-colors">
+                    + add note
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button onClick={save}   className="flex-1 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors">Save</button>
+              <button onClick={cancel} className="flex-1 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs transition-colors">Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Obsidian Vault Sync ───────────────────────────────────────
+function ObsidianSync({ cards, dailyNote, debrief }) {
+  const [syncStatus,  setSyncStatus]  = useState('');
+  const [hasVault,    setHasVault]    = useState(false);
+  const dirRef = useRef(null);
+  const fsaSupported = typeof window.showDirectoryPicker === 'function';
+
+  const syncToVault = async () => {
+    setSyncStatus('');
+    try {
+      if (!dirRef.current) {
+        dirRef.current = await window.showDirectoryPicker({ mode: 'readwrite' });
+        setHasVault(true);
+      }
+      const perm = await dirRef.current.requestPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') { setSyncStatus('❌ Permission denied'); return; }
+
+      const fname   = `Dashboard-${todayStr()}.md`;
+      const content = genMarkdown(cards, dailyNote, debrief);
+      const fh      = await dirRef.current.getFileHandle(fname, { create: true });
+      const w       = await fh.createWritable();
+      await w.write(content);
+      await w.close();
+      setSyncStatus(`✅ Synced → ${fname}`);
+    } catch (e) {
+      if (e.name !== 'AbortError') setSyncStatus('❌ Sync failed — try again');
+    }
+  };
+
+  const downloadMd = () => {
+    const content = genMarkdown(cards, dailyNote, debrief);
+    const blob    = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url     = URL.createObjectURL(blob);
+    const a       = document.createElement('a');
+    a.href     = url;
+    a.download = `Dashboard-${todayStr()}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setSyncStatus('📥 Downloaded');
+    setTimeout(() => setSyncStatus(''), 3000);
+  };
+
+  return (
+    <div className="bg-slate-800 rounded-xl border border-slate-700 p-4 flex flex-wrap items-center gap-3">
+      <div className="flex items-center gap-2 flex-1 min-w-0">
+        <span className="text-lg">📂</span>
+        <div className="min-w-0">
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Obsidian Vault Sync</div>
+          <div className="text-xs text-slate-600 truncate">
+            {hasVault ? 'Vault connected — click to write today\'s note' : 'Exports full dashboard as a daily note .md file'}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        {syncStatus && <span className="text-xs text-slate-400">{syncStatus}</span>}
+        {fsaSupported && (
+          <button
+            onClick={syncToVault}
+            className="px-3 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 active:bg-teal-800 text-white text-xs font-semibold transition-colors"
+          >
+            {hasVault ? '📂 Sync Now' : '📂 Set Vault & Sync'}
+          </button>
+        )}
+        <button
+          onClick={downloadMd}
+          className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs transition-colors"
+        >
+          📥 Download .md
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Quick stats bar ───────────────────────────────────────────
+function StatsBar({ cards }) {
+  const active  = cards.filter(c => c.status === 'Active').length;
+  const blocked = cards.filter(c => c.status === 'Blocked').length;
+  const stale   = cards.filter(c => daysAgo(c.lastUpdated) >= 7).length;
+  const high    = cards.filter(c => c.priority === 'High' && c.status !== 'Done').length;
+  return (
+    <div className="flex flex-wrap gap-2 mb-4">
+      {[
+        { label:'Active',    val:active,  color:'text-emerald-400', bg:'bg-emerald-500/10 border-emerald-500/20' },
+        { label:'Blocked',   val:blocked, color:'text-red-400',     bg:'bg-red-500/10 border-red-500/20' },
+        { label:'High Pri',  val:high,    color:'text-amber-400',   bg:'bg-amber-500/10 border-amber-500/20' },
+        { label:'Stale 7d+', val:stale,   color:'text-slate-400',   bg:'bg-slate-700/50 border-slate-600/40' },
+      ].map(s => (
+        <div key={s.label} className={`flex items-center gap-1.5 text-xs px-3 py-1 rounded-full border ${s.bg}`}>
+          <span className={`font-bold text-sm ${s.color}`}>{s.val}</span>
+          <span className="text-slate-500">{s.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// APP ROOT
+// ══════════════════════════════════════════════════════════════
+function App() {
+  const [cards,     setCards]     = useState(INITIAL_CARDS);
+  const [dailyNote, setDailyNote] = useState('');
+  const [debrief,   setDebrief]   = useState('');
+  const [time,      setTime]      = useState(new Date());
+  const [loaded,    setLoaded]    = useState(false);
+
+  // Load persisted state
+  useEffect(() => {
+    loadState().then(s => {
+      if (s?.cards)     setCards(s.cards);
+      if (s?.dailyNote !== undefined) setDailyNote(s.dailyNote);
+      if (s?.debrief)   setDebrief(s.debrief);
+      setLoaded(true);
+    });
+  }, []);
+
+  // Persist on change
+  useEffect(() => {
+    if (loaded) saveState({ cards, dailyNote, debrief });
+  }, [cards, dailyNote, debrief, loaded]);
+
+  // Live clock (updates every 30s)
+  useEffect(() => {
+    const t = setInterval(() => setTime(new Date()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  const updateCard = useCallback((id, updates) => {
+    setCards(prev => prev.map(c =>
+      c.id === id ? { ...c, ...updates, lastUpdated: todayStr() } : c
+    ));
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100">
+      <Header time={time} />
+
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+
+        {/* Top row: debrief + daily note (left) | meal plan + ML (right) */}
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 space-y-4">
+            <DailyNote value={dailyNote} onChange={setDailyNote} />
+            <DebriefPanel cards={cards} dailyNote={dailyNote} debrief={debrief} setDebrief={setDebrief} />
+          </div>
+          <div className="space-y-4">
+            <MealSummary />
+            <MLProgressSummary />
+          </div>
+        </div>
+
+        {/* Life area cards */}
+        <div>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Life Areas</div>
+            <div className="flex-1 h-px bg-slate-800" />
+          </div>
+          <StatsBar cards={cards} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {cards.map(c => <LifeCard key={c.id} card={c} onUpdate={updateCard} />)}
+          </div>
+        </div>
+
+        {/* Obsidian sync footer */}
+        <ObsidianSync cards={cards} dailyNote={dailyNote} debrief={debrief} />
+
+        <div className="text-center text-xs text-slate-700 pb-4">
+          David Santos · EE PhD · Texas A&M · All data stored locally
+        </div>
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
